@@ -1,0 +1,14 @@
+openai
+yfinance
+pandas
+numpy
+scipy
+statsmodels
+requests
+python-dotenv
+fastapi
+uvicorn
+wandb
+plotly
+pydantic
+pytest
