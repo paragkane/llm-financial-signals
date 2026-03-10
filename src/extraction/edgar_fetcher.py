@@ -65,39 +65,34 @@ def get_filings(cik: str, form_type: str = "10-Q", limit: int = 8) -> list[dict]
 
 def get_readable_doc(cik: str, accession: str, primary_doc: str) -> str:
     """
-    Find the best readable HTM document from the filing index.
-    EDGAR's primaryDocument is sometimes an XBRL metadata file.
-    We prefer the largest .htm file that isn't a pure XBRL instance doc.
-    """
-    base_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}"
-    index_url = f"{base_url}/{accession[:18].replace('', '')}"
+    Return the best readable HTM document for a filing.
 
-    # Fetch the filing index page to list all documents
+    EDGAR's primaryDocument field reliably points to the main filing HTM.
+    We trust it directly if it ends in .htm — only fall back to index
+    parsing if primaryDocument is a non-HTML file (e.g. .xml, .xsd).
+    """
+    # Primary doc is an HTM — trust it directly (covers AAPL, MSFT, JPM, etc.)
+    if primary_doc.lower().endswith(".htm"):
+        return primary_doc
+
+    # Primary doc is XML/XSD — parse the filing index to find the HTM
     acc_dashed = f"{accession[:10]}-{accession[10:12]}-{accession[12:]}"
     index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{acc_dashed}-index.htm"
     resp = requests.get(index_url, headers=EDGAR_HEADERS, timeout=15)
 
     if resp.status_code != 200:
-        return primary_doc  # fall back to primary
+        return primary_doc
 
     import re
-    # Extract all .htm links from the index page
     links = re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', resp.text, re.IGNORECASE)
 
-    # Exclude exhibits (cert, exhibit31, exhibit32, etc.) and XBRL viewers
     def is_main_doc(path: str) -> bool:
         name = path.split("/")[-1].lower()
-        excludes = ["exhibit", "ex-", "ex3", "ex9", "r1.", "r2.", "r3.", "r4.", "r5.",
-                    "r6.", "r7.", "r8.", "r9.", "filingsummary"]
+        excludes = ["ex-", "-ex", "exhibit", "filingsummary",
+                    "r1.", "r2.", "r3.", "r4.", "r5.", "r6.", "r7.", "r8.", "r9."]
         return not any(ex in name for ex in excludes)
 
     candidates = [l.split("/")[-1] for l in links if is_main_doc(l)]
-
-    # Prefer the primary_doc if it ends in .htm and is a candidate
-    if primary_doc.endswith(".htm") and primary_doc in candidates:
-        return primary_doc
-
-    # Otherwise return first valid candidate, else fall back
     return candidates[0] if candidates else primary_doc
 
 

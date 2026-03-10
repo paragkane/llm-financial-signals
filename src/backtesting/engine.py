@@ -59,39 +59,51 @@ def ttest(returns: pd.Series) -> tuple[float, float]:
 
 def run_sentiment_backtest(df: pd.DataFrame, horizon: str = "fwd_return_5d") -> dict:
     """
-    Test: do high sentiment scores (> 0.3) predict positive returns?
-    Compare bullish filings vs bearish filings.
+    Test: does sentiment score correlate with forward returns?
+
+    Uses two approaches:
+    1. Continuous: Pearson correlation + linear regression (more statistically powerful)
+    2. Bucketed: high (>0.1) vs low (<=0.0) sentiment comparison
     """
-    df = df.dropna(subset=[horizon]).copy()
-    if df.empty:
+    df = df.dropna(subset=[horizon, "sentiment_score"]).copy()
+    if len(df) < 3:
         return {}
 
-    # Split into bullish / bearish / neutral buckets
-    bullish = df[df["sentiment_score"] > 0.3][horizon]
-    bearish = df[df["sentiment_score"] < -0.3][horizon]
-    neutral = df[df["sentiment_score"].between(-0.3, 0.3)][horizon]
+    returns = df[horizon]
+    scores = df["sentiment_score"]
 
-    # Direction signal: +1 if bullish, -1 if bearish
-    signal_dir = df["sentiment_score"].apply(lambda x: 1 if x > 0.3 else (-1 if x < -0.3 else 0))
-    all_directional = df[signal_dir != 0][horizon]
-    all_signal_dir = signal_dir[signal_dir != 0]
+    # ── Continuous correlation ─────────────────────────────────────
+    corr, corr_p = stats.pearsonr(scores, returns)
 
-    t, p = ttest(all_directional)
+    # Linear regression: return = alpha + beta * sentiment
+    slope, intercept, r_value, reg_p, std_err = stats.linregress(scores, returns)
+
+    # ── Bucketed: above-median vs below-median sentiment ──────────
+    median_score = scores.median()
+    high = df[scores > median_score][horizon]
+    low  = df[scores <= median_score][horizon]
+
+    signal_dir = (scores > median_score).astype(int) * 2 - 1  # +1 or -1
+    t, p = ttest(returns)
+
+    # Hit rate using median split
+    hr = hit_rate(returns, signal_dir)
 
     return {
         "signal": "sentiment_score",
         "horizon": horizon,
         "n_total": len(df),
-        "n_bullish": len(bullish),
-        "n_bearish": len(bearish),
-        "n_neutral": len(neutral),
-        "bullish_mean_return": round(float(bullish.mean()), 6) if len(bullish) > 0 else None,
-        "bearish_mean_return": round(float(bearish.mean()), 6) if len(bearish) > 0 else None,
-        "overall_sharpe": round(sharpe(all_directional, horizon), 4),
-        "hit_rate": round(hit_rate(all_directional, all_signal_dir), 4),
+        "pearson_correlation": round(float(corr), 4),
+        "correlation_p_value": round(float(corr_p), 4),
+        "regression_slope": round(float(slope), 6),
+        "regression_p_value": round(float(reg_p), 4),
+        "high_sentiment_mean_return": round(float(high.mean()), 6) if len(high) > 0 else None,
+        "low_sentiment_mean_return":  round(float(low.mean()), 6) if len(low) > 0 else None,
+        "overall_sharpe": round(sharpe(returns, horizon), 4),
+        "hit_rate": round(hr, 4),
         "t_stat": round(t, 4),
         "p_value": round(p, 4),
-        "significant": p < 0.05,
+        "significant": bool(corr_p < 0.05 or reg_p < 0.05),
     }
 
 
@@ -216,10 +228,11 @@ def print_summary(results: dict) -> None:
             continue
         sig = "✅ SIGNIFICANT" if r.get("significant") else "❌ not significant"
         print(f"Signal: {r.get('signal')}")
-        print(f"  Hit rate:    {r.get('hit_rate', 'n/a')}")
-        print(f"  Sharpe:      {r.get('overall_sharpe', 'n/a')}")
-        print(f"  t-stat:      {r.get('t_stat', 'n/a')}")
-        print(f"  p-value:     {r.get('p_value', 'n/a')}  {sig}")
+        print(f"  Hit rate:         {r.get('hit_rate', 'n/a')}")
+        print(f"  Sharpe:           {r.get('overall_sharpe', 'n/a')}")
+        print(f"  Pearson corr:     {r.get('pearson_correlation', 'n/a')}  (p={r.get('correlation_p_value', 'n/a')})")
+        print(f"  Regression slope: {r.get('regression_slope', 'n/a')}  (p={r.get('regression_p_value', 'n/a')})")
+        print(f"  t-stat:           {r.get('t_stat', 'n/a')}  p={r.get('p_value', 'n/a')}  {sig}")
         print()
 
 
