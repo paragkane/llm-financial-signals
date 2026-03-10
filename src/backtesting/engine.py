@@ -1,0 +1,231 @@
+"""
+Backtesting engine.
+
+Takes the aligned signals+returns dataset and answers one question:
+"Do the LLM-extracted signals have statistically significant predictive
+power over future stock returns?"
+
+Metrics computed per signal:
+  - hit_rate:     % of trades where signal direction matched price direction
+  - mean_return:  average forward return when signal was active
+  - sharpe_ratio: mean_return / std_return (annualized)
+  - t_stat:       statistical significance of mean_return vs zero
+  - p_value:      probability this result is random noise (want < 0.05)
+  - n:            number of observations
+"""
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+DATA_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
+RESULTS_DIR = Path(__file__).parent.parent.parent / "data" / "processed" / "backtest_results"
+
+ANNUALIZATION = {
+    "fwd_return_1d": 252,
+    "fwd_return_5d": 52,
+    "fwd_return_21d": 12,
+}
+
+
+def sharpe(returns: pd.Series, horizon: str) -> float:
+    """Annualized Sharpe ratio (assumes zero risk-free rate)."""
+    if returns.std() == 0 or len(returns) < 2:
+        return 0.0
+    periods_per_year = ANNUALIZATION.get(horizon, 252)
+    return float((returns.mean() / returns.std()) * np.sqrt(periods_per_year))
+
+
+def hit_rate(returns: pd.Series, signal_direction: pd.Series) -> float:
+    """
+    % of times the signal correctly predicted price direction.
+    signal_direction: +1 (bullish) or -1 (bearish)
+    """
+    correct = ((returns > 0) & (signal_direction > 0)) | \
+              ((returns < 0) & (signal_direction < 0))
+    return float(correct.mean())
+
+
+def ttest(returns: pd.Series) -> tuple[float, float]:
+    """One-sample t-test: is mean return significantly different from zero?"""
+    if len(returns) < 3:
+        return 0.0, 1.0
+    t, p = stats.ttest_1samp(returns.dropna(), 0)
+    return float(t), float(p)
+
+
+def run_sentiment_backtest(df: pd.DataFrame, horizon: str = "fwd_return_5d") -> dict:
+    """
+    Test: do high sentiment scores (> 0.3) predict positive returns?
+    Compare bullish filings vs bearish filings.
+    """
+    df = df.dropna(subset=[horizon]).copy()
+    if df.empty:
+        return {}
+
+    # Split into bullish / bearish / neutral buckets
+    bullish = df[df["sentiment_score"] > 0.3][horizon]
+    bearish = df[df["sentiment_score"] < -0.3][horizon]
+    neutral = df[df["sentiment_score"].between(-0.3, 0.3)][horizon]
+
+    # Direction signal: +1 if bullish, -1 if bearish
+    signal_dir = df["sentiment_score"].apply(lambda x: 1 if x > 0.3 else (-1 if x < -0.3 else 0))
+    all_directional = df[signal_dir != 0][horizon]
+    all_signal_dir = signal_dir[signal_dir != 0]
+
+    t, p = ttest(all_directional)
+
+    return {
+        "signal": "sentiment_score",
+        "horizon": horizon,
+        "n_total": len(df),
+        "n_bullish": len(bullish),
+        "n_bearish": len(bearish),
+        "n_neutral": len(neutral),
+        "bullish_mean_return": round(float(bullish.mean()), 6) if len(bullish) > 0 else None,
+        "bearish_mean_return": round(float(bearish.mean()), 6) if len(bearish) > 0 else None,
+        "overall_sharpe": round(sharpe(all_directional, horizon), 4),
+        "hit_rate": round(hit_rate(all_directional, all_signal_dir), 4),
+        "t_stat": round(t, 4),
+        "p_value": round(p, 4),
+        "significant": p < 0.05,
+    }
+
+
+def run_tone_backtest(df: pd.DataFrame, horizon: str = "fwd_return_5d") -> dict:
+    """
+    Test: does management tone predict returns?
+    optimistic → long, defensive/cautious → short
+    """
+    df = df.dropna(subset=[horizon]).copy()
+    if df.empty:
+        return {}
+
+    tone_map = {"optimistic": 1, "neutral": 0, "cautious": -1, "defensive": -1}
+    df["tone_signal"] = df["tone"].map(tone_map).fillna(0)
+
+    directional = df[df["tone_signal"] != 0]
+    if directional.empty:
+        return {}
+
+    returns = directional[horizon]
+    signal_dir = directional["tone_signal"]
+    t, p = ttest(returns)
+
+    return {
+        "signal": "tone",
+        "horizon": horizon,
+        "n_total": len(df),
+        "tone_counts": df["tone"].value_counts().to_dict(),
+        "optimistic_mean_return": round(float(df[df["tone"] == "optimistic"][horizon].mean()), 6) if len(df[df["tone"] == "optimistic"]) > 0 else None,
+        "cautious_mean_return": round(float(df[df["tone"].isin(["cautious", "defensive"])][horizon].mean()), 6) if len(df[df["tone"].isin(["cautious", "defensive"])]) > 0 else None,
+        "overall_sharpe": round(sharpe(returns, horizon), 4),
+        "hit_rate": round(hit_rate(returns, signal_dir), 4),
+        "t_stat": round(t, 4),
+        "p_value": round(p, 4),
+        "significant": p < 0.05,
+    }
+
+
+def run_guidance_backtest(df: pd.DataFrame, horizon: str = "fwd_return_5d") -> dict:
+    """
+    Test: does guidance revision direction predict returns?
+    raised → long, lowered → short
+    """
+    df = df.dropna(subset=[horizon]).copy()
+    if df.empty:
+        return {}
+
+    guidance_map = {"raised": 1, "maintained": 0, "lowered": -1, "none": 0}
+    df["guidance_signal"] = df["guidance_direction"].map(guidance_map).fillna(0)
+
+    directional = df[df["guidance_signal"] != 0]
+    if directional.empty:
+        return {"signal": "guidance_direction", "horizon": horizon, "note": "no raised/lowered guidance in dataset"}
+
+    returns = directional[horizon]
+    signal_dir = directional["guidance_signal"]
+    t, p = ttest(returns)
+
+    return {
+        "signal": "guidance_direction",
+        "horizon": horizon,
+        "n_total": len(df),
+        "guidance_counts": df["guidance_direction"].value_counts().to_dict(),
+        "raised_mean_return": round(float(df[df["guidance_direction"] == "raised"][horizon].mean()), 6) if len(df[df["guidance_direction"] == "raised"]) > 0 else None,
+        "lowered_mean_return": round(float(df[df["guidance_direction"] == "lowered"][horizon].mean()), 6) if len(df[df["guidance_direction"] == "lowered"]) > 0 else None,
+        "overall_sharpe": round(sharpe(returns, horizon), 4),
+        "hit_rate": round(hit_rate(returns, signal_dir), 4),
+        "t_stat": round(t, 4),
+        "p_value": round(p, 4),
+        "significant": p < 0.05,
+    }
+
+
+def run_full_backtest(tickers: list[str], horizon: str = "fwd_return_5d") -> dict:
+    """
+    Run all signal backtests across a list of tickers.
+    Pools all aligned data together for statistical power.
+    """
+    frames = []
+    for ticker in tickers:
+        path = DATA_DIR / f"{ticker.upper()}_signals_aligned.parquet"
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+        else:
+            print(f"[{ticker}] No aligned data found, skipping.")
+
+    if not frames:
+        raise ValueError("No aligned data found for any ticker.")
+
+    df = pd.concat(frames, ignore_index=True)
+    print(f"\nPooled dataset: {len(df)} filings across {df['ticker'].nunique()} tickers\n")
+
+    results = {
+        "n_filings": len(df),
+        "n_tickers": df["ticker"].nunique(),
+        "tickers": df["ticker"].unique().tolist(),
+        "horizon": horizon,
+        "sentiment": run_sentiment_backtest(df, horizon),
+        "tone": run_tone_backtest(df, horizon),
+        "guidance": run_guidance_backtest(df, horizon),
+    }
+
+    # Save results
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = RESULTS_DIR / f"backtest_{horizon}.json"
+    out_path.write_text(json.dumps(results, indent=2))
+    print(f"Results saved → {out_path}")
+
+    return results
+
+
+def print_summary(results: dict) -> None:
+    """Print a clean readable summary of backtest results."""
+    print(f"\n{'='*60}")
+    print(f"BACKTEST RESULTS — horizon: {results['horizon']}")
+    print(f"Dataset: {results['n_filings']} filings, {results['n_tickers']} tickers")
+    print(f"{'='*60}\n")
+
+    for key in ["sentiment", "tone", "guidance"]:
+        r = results.get(key, {})
+        if not r:
+            continue
+        sig = "✅ SIGNIFICANT" if r.get("significant") else "❌ not significant"
+        print(f"Signal: {r.get('signal')}")
+        print(f"  Hit rate:    {r.get('hit_rate', 'n/a')}")
+        print(f"  Sharpe:      {r.get('overall_sharpe', 'n/a')}")
+        print(f"  t-stat:      {r.get('t_stat', 'n/a')}")
+        print(f"  p-value:     {r.get('p_value', 'n/a')}  {sig}")
+        print()
+
+
+if __name__ == "__main__":
+    import sys
+    tickers = sys.argv[1:] if len(sys.argv) > 1 else ["AAPL"]
+    for horizon in ["fwd_return_1d", "fwd_return_5d", "fwd_return_21d"]:
+        results = run_full_backtest(tickers, horizon)
+        print_summary(results)
