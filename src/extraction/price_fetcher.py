@@ -12,8 +12,11 @@ import yfinance as yf
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
 
 
-def fetch_prices(ticker: str, start: str = "2019-01-01", end: str = "2026-01-01") -> pd.DataFrame:
+def fetch_prices(ticker: str, start: str = "2019-01-01", end: str | None = None) -> pd.DataFrame:
     """Download daily adjusted close prices for a ticker."""
+    from datetime import date
+    if end is None:
+        end = str(date.today())
     df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
     if df.empty:
         raise ValueError(f"No price data returned for {ticker}")
@@ -47,7 +50,7 @@ def load_prices(ticker: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def fetch_and_save(tickers: list[str], start: str = "2019-01-01", end: str = "2026-01-01") -> dict:
+def fetch_and_save(tickers: list[str], start: str = "2019-01-01", end: str | None = None) -> dict:
     """
     Main entry point. Fetch prices + forward returns for a list of tickers.
 
