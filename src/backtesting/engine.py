@@ -196,14 +196,39 @@ def run_full_backtest(tickers: list[str], horizon: str = "fwd_return_5d") -> dic
     df = pd.concat(frames, ignore_index=True)
     print(f"\nPooled dataset: {len(df)} filings across {df['ticker'].nunique()} tickers\n")
 
+    # Add factor-neutralized returns if available
+    neutralized_horizon = f"{horizon}_neutralized"
+    if neutralized_horizon not in df.columns:
+        try:
+            from src.backtesting.factor_model import add_neutralized_columns
+            df = add_neutralized_columns(df)
+            print(f"Factor neutralization applied.\n")
+        except Exception as e:
+            print(f"Factor neutralization skipped: {e}\n")
+
+    # Run on raw returns
+    raw_results = {
+        "sentiment": run_sentiment_backtest(df, horizon),
+        "tone":      run_tone_backtest(df, horizon),
+        "guidance":  run_guidance_backtest(df, horizon),
+    }
+
+    # Run on neutralized returns if available
+    neutralized_results = {}
+    if neutralized_horizon in df.columns:
+        neutralized_results = {
+            "sentiment": run_sentiment_backtest(df, neutralized_horizon),
+            "tone":      run_tone_backtest(df, neutralized_horizon),
+            "guidance":  run_guidance_backtest(df, neutralized_horizon),
+        }
+
     results = {
         "n_filings": len(df),
         "n_tickers": df["ticker"].nunique(),
         "tickers": df["ticker"].unique().tolist(),
         "horizon": horizon,
-        "sentiment": run_sentiment_backtest(df, horizon),
-        "tone": run_tone_backtest(df, horizon),
-        "guidance": run_guidance_backtest(df, horizon),
+        **raw_results,
+        "neutralized": neutralized_results,
     }
 
     # Save results
@@ -222,17 +247,26 @@ def print_summary(results: dict) -> None:
     print(f"Dataset: {results['n_filings']} filings, {results['n_tickers']} tickers")
     print(f"{'='*60}\n")
 
-    for key in ["sentiment", "tone", "guidance"]:
-        r = results.get(key, {})
+    def _print_signal(r: dict, label: str = "") -> None:
         if not r:
-            continue
+            return
         sig = "✅ SIGNIFICANT" if r.get("significant") else "❌ not significant"
-        print(f"Signal: {r.get('signal')}")
-        print(f"  Hit rate:         {r.get('hit_rate', 'n/a')}")
-        print(f"  Sharpe:           {r.get('overall_sharpe', 'n/a')}")
-        print(f"  Pearson corr:     {r.get('pearson_correlation', 'n/a')}  (p={r.get('correlation_p_value', 'n/a')})")
-        print(f"  Regression slope: {r.get('regression_slope', 'n/a')}  (p={r.get('regression_p_value', 'n/a')})")
-        print(f"  t-stat:           {r.get('t_stat', 'n/a')}  p={r.get('p_value', 'n/a')}  {sig}")
+        prefix = f"  [{label}] " if label else "  "
+        print(f"Signal: {r.get('signal')}  {label}")
+        print(f"{prefix}Hit rate:         {r.get('hit_rate', 'n/a')}")
+        print(f"{prefix}Sharpe:           {r.get('overall_sharpe', 'n/a')}")
+        print(f"{prefix}Pearson corr:     {r.get('pearson_correlation', 'n/a')}  (p={r.get('correlation_p_value', 'n/a')})")
+        print(f"{prefix}Regression slope: {r.get('regression_slope', 'n/a')}  (p={r.get('regression_p_value', 'n/a')})")
+        print(f"{prefix}t-stat:           {r.get('t_stat', 'n/a')}  p={r.get('p_value', 'n/a')}  {sig}")
+
+    for key in ["sentiment", "tone", "guidance"]:
+        raw = results.get(key, {})
+        neu = results.get("neutralized", {}).get(key, {})
+        if not raw:
+            continue
+        _print_signal(raw, "raw")
+        if neu:
+            _print_signal(neu, "sector-neutralized")
         print()
 
 
