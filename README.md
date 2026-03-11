@@ -6,6 +6,10 @@ An end-to-end pipeline that extracts quantitative alpha signals from SEC 10-Q fi
 
 ---
 
+## Results Dashboard
+
+![Backtest Results Dashboard](charts/dashboard_screenshot.png)
+
 ## Results
 
 | Signal | Horizon | Sharpe | Hit Rate | t-stat | p-value |

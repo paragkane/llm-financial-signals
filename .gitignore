@@ -9,3 +9,5 @@ data/processed/
 *.parquet
 *.csv
 .ipynb_checkpoints/
+charts/*.html
+charts/dashboard_screenshot.png linguist-vendored
