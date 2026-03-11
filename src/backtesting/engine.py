@@ -103,7 +103,7 @@ def run_sentiment_backtest(df: pd.DataFrame, horizon: str = "fwd_return_5d") -> 
         "hit_rate": round(hr, 4),
         "t_stat": round(t, 4),
         "p_value": round(p, 4),
-        "significant": bool(corr_p < 0.05 or reg_p < 0.05),
+        "significant": bool(corr_p < 0.05 or reg_p < 0.05 or p < 0.05),
     }
 
 
