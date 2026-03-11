@@ -21,7 +21,18 @@ from src.extraction.signal_extractor import extract_ticker
 from src.backtesting.signal_aligner import align_and_save
 from src.backtesting.engine import run_full_backtest, print_summary
 
-TICKERS = ["AAPL", "MSFT", "JPM", "GS", "BAC"]
+TICKERS = [
+    # Tech
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META",
+    # Finance
+    "JPM", "GS", "BAC", "MS", "WFC", "BLK",
+    # Healthcare
+    "JNJ", "UNH", "PFE",
+    # Consumer
+    "WMT", "HD", "NKE",
+    # Energy
+    "XOM", "CVX",
+]
 FILINGS_PER_TICKER = 4   # 4 quarters each = ~20 filings total
 FORM_TYPE = "10-Q"
 
